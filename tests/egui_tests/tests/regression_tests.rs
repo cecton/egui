@@ -323,6 +323,72 @@ fn warn_if_rect_changes_id_false_positive_parent_shift() {
     );
 }
 
+/// Regression test: `warn_if_rect_changes_id` should NOT fire when a widget moves
+/// to a different rect and a brand-new widget (never seen before) coincidentally
+/// occupies the vacated rect.
+///
+/// Scenario: widget A lives at `rect_a` in frame 1. In frame 2, widget A moves to a
+/// fresh `rect_c` and a new widget C appears at `rect_a`. From `warn_if_rect_changes_id`'s
+/// perspective, `rect_a`'s id changed from A to C — but this is NOT a bug, because widget A
+/// still exists in the frame (it just moved).
+///
+/// This is suppressed by the "all-on-prev" check in `warn_if_rect_changes_id`:
+/// if every previous occupant of the rect still exists somewhere in the new frame
+/// (even at a different rect), the id change is a positional coincidence, not a widget bug.
+///
+/// Note: `rect_c` must be a fresh rect with no previous occupant. If widget A moved to
+/// a rect that already had a widget, that second rect would also appear to change id
+/// (the old occupant disappears), which would trigger an unrelated warning there.
+#[test]
+fn warn_if_rect_changes_id_false_positive_widget_moved_coincident_rect() {
+    use std::cell::Cell;
+
+    let rect_a = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(80.0, 20.0));
+    // rect_c is a fresh rect that had no widget in frame 1, so no second rect triggers a warning.
+    let rect_c = egui::Rect::from_min_size(egui::pos2(10.0, 40.0), egui::vec2(80.0, 20.0));
+
+    // frame_index: 0 → widget A at rect_a only
+    //              1 → widget A moves to rect_c (fresh), brand-new widget C appears at rect_a
+    let frame_index = Cell::new(0u32);
+
+    let mut harness = Harness::builder().with_size((200.0, 100.0)).build_ui(|ui| {
+        if frame_index.get() == 0 {
+            let id_a = ui.id().with("widget_a");
+            let _ = ui.interact(rect_a, id_a, egui::Sense::click());
+        } else {
+            // Widget A moves to rect_c (no previous occupant); widget C (brand new) appears at rect_a.
+            let id_a = ui.id().with("widget_a");
+            let _ = ui.interact(rect_c, id_a, egui::Sense::click());
+            let id_c = ui.id().with("widget_c");
+            let _ = ui.interact(rect_a, id_c, egui::Sense::click());
+        }
+    });
+
+    // Frame 1: establishes prev_pass baseline.
+    harness.step();
+    assert!(
+        !has_red_warning_rect(harness.output()),
+        "Should not warn on first frame"
+    );
+
+    // Frame 2: same layout — no change expected.
+    harness.step();
+    assert!(
+        !has_red_warning_rect(harness.output()),
+        "Should not warn when nothing changed"
+    );
+
+    // Frame 3: widget A moves to rect_c; brand-new widget C appears at rect_a.
+    // rect_a now has a different id, but the old occupant (A) still exists elsewhere
+    // in the frame — so this is NOT a widget ID bug.
+    frame_index.set(1);
+    harness.step();
+    assert!(
+        !has_red_warning_rect(harness.output()),
+        "Should NOT warn when the old widget moved away and a new widget occupies the same rect"
+    );
+}
+
 #[test]
 fn horizontal_wrapped_multiline_row_height() {
     let mut harness = Harness::builder().with_size((350.0, 300.0)).build_ui(|ui| {
